@@ -1,4 +1,4 @@
-﻿namespace DiscordChatExporter.Core.Discord.Data.Embeds;
+namespace DiscordChatExporter.Core.Discord.Data.Embeds;
 
 public partial record YouTubeVideoEmbedProjection(string VideoId)
 {

@@ -6,6 +6,7 @@
     <PackageReference Include="Gress" />
     <PackageReference Include="JsonExtensions" />
     <PackageReference Include="Polly" />
+    <PackageReference Include="PowerKit" />
     <PackageReference Include="RazorBlade" />
     <PackageReference Include="Superpower" />
     <PackageReference Include="WebMarkupMin.Core" />
