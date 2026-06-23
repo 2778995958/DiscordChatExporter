@@ -4,6 +4,8 @@ using System.IO;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -21,6 +23,10 @@ internal partial class ExportAssetDownloader(string workingDirPath, bool reuse =
     // File paths of the previously downloaded assets
     private readonly Dictionary<string, string> _previousPathsByUrl = new(StringComparer.Ordinal);
 
+    private readonly string _assetMapFilePath = Path.Combine(workingDirPath, ".asset-map.json");
+
+    private Dictionary<string, string>? _assetPathsByUrl;
+
     public async ValueTask<string> DownloadAsync(
         string url,
         string? authorSubDir = null,
@@ -34,8 +40,18 @@ internal partial class ExportAssetDownloader(string workingDirPath, bool reuse =
         var fileName = GetFileNameFromUrl(url);
         var filePath = Path.Combine(targetDir, fileName);
 
+        using var _ = await Locker.LockAsync(_assetMapFilePath, cancellationToken);
+
         if (_previousPathsByUrl.TryGetValue(url, out var cachedFilePath))
             return cachedFilePath;
+
+        var assetPathsByUrl = GetAssetPathsByUrl();
+        if (assetPathsByUrl.TryGetValue(url, out var mappedFilePath))
+        {
+            var mappedAbsoluteFilePath = Path.Combine(workingDirPath, mappedFilePath);
+            if (File.Exists(mappedAbsoluteFilePath))
+                return _previousPathsByUrl[url] = mappedAbsoluteFilePath;
+        }
 
         // Reuse existing files if we're allowed to
         if (reuse && File.Exists(filePath))
@@ -124,12 +140,53 @@ internal partial class ExportAssetDownloader(string workingDirPath, bool reuse =
             cancellationToken
         );
 
+        assetPathsByUrl[url] = Path.GetRelativePath(workingDirPath, actualFilePath);
+        SaveAssetPathsByUrl(assetPathsByUrl);
+
         return _previousPathsByUrl[url] = actualFilePath;
     }
 }
 
 internal partial class ExportAssetDownloader
 {
+    private Dictionary<string, string> GetAssetPathsByUrl()
+    {
+        if (_assetPathsByUrl is not null)
+            return _assetPathsByUrl;
+
+        if (!File.Exists(_assetMapFilePath))
+            return _assetPathsByUrl = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        try
+        {
+            return _assetPathsByUrl =
+                JsonSerializer.Deserialize(
+                    File.ReadAllText(_assetMapFilePath),
+                    SerializerContext.Default.DictionaryStringString
+                ) ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return _assetPathsByUrl = new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+    }
+
+    private void SaveAssetPathsByUrl(Dictionary<string, string> assetPathsByUrl)
+    {
+        Directory.CreateDirectory(workingDirPath);
+
+        File.WriteAllText(
+            _assetMapFilePath,
+            JsonSerializer.Serialize(
+                assetPathsByUrl,
+                SerializerContext.Default.DictionaryStringString
+            )
+        );
+    }
+
+    [JsonSerializable(typeof(Dictionary<string, string>))]
+    private partial class SerializerContext : JsonSerializerContext;
+
     private static string? GetFileNameFromContentDisposition(string? contentDisposition)
     {
         if (string.IsNullOrEmpty(contentDisposition))
