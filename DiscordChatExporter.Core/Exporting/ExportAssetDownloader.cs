@@ -21,9 +21,6 @@ internal partial class ExportAssetDownloader(string workingDirPath, bool reuse =
     // File paths of the previously downloaded assets
     private readonly Dictionary<string, string> _previousPathsByUrl = new(StringComparer.Ordinal);
 
-    // Kept for API compatibility
-    private readonly bool _reuse = reuse;
-
     public async ValueTask<string> DownloadAsync(
         string url,
         string? authorSubDir = null,
@@ -103,8 +100,9 @@ internal partial class ExportAssetDownloader(string workingDirPath, bool reuse =
                 else
                 {
                     var urlFileName = new Uri(url, UriKind.RelativeOrAbsolute).TryGetFileName();
-                    baseName = Path.GetFileNameWithoutExtension(urlFileName).Truncate(60);
-                    ext = Path.GetExtension(urlFileName);
+                    baseName = Path.GetFileNameWithoutExtension(urlFileName ?? fileName)
+                        .Truncate(60);
+                    ext = Path.GetExtension(urlFileName ?? fileName);
                 }
 
                 // First file keeps original name; duplicates get -v2, -v3, etc.
