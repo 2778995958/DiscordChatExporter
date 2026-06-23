@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -13,71 +14,109 @@ using DiscordChatExporter.Core.Utils.Extensions;
 
 namespace DiscordChatExporter.Core.Exporting;
 
-internal partial class ExportAssetDownloader(string workingDirPath, bool reuse)
+internal partial class ExportAssetDownloader(string workingDirPath, bool reuse = false)
 {
     private static readonly AsyncKeyedLocker<string> Locker = new();
 
     // File paths of the previously downloaded assets
     private readonly Dictionary<string, string> _previousPathsByUrl = new(StringComparer.Ordinal);
 
+    // Kept for API compatibility
+    private readonly bool _reuse = reuse;
+
     public async ValueTask<string> DownloadAsync(
         string url,
+        string? authorSubDir = null,
         CancellationToken cancellationToken = default
     )
     {
-        var fileName = GetFileNameFromUrl(url);
-        var filePath = Path.Combine(workingDirPath, fileName);
+        var targetDir = authorSubDir is not null
+            ? Path.Combine(workingDirPath, authorSubDir)
+            : workingDirPath;
 
-        using var _ = await Locker.LockAsync(filePath, cancellationToken);
+        var fileName = GetFileNameFromUrl(url);
+        var filePath = Path.Combine(targetDir, fileName);
 
         if (_previousPathsByUrl.TryGetValue(url, out var cachedFilePath))
             return cachedFilePath;
 
-        // Reuse existing files if we're allowed to
-        if (reuse && File.Exists(filePath))
-            return _previousPathsByUrl[url] = filePath;
+        Directory.CreateDirectory(targetDir);
 
-        // Check for a file cached by the legacy naming scheme (5-char hash) and rename it
-        // to the new naming scheme to preserve backwards compatibility with existing exports
-        if (reuse)
-        {
-            var legacyFilePath = Path.Combine(workingDirPath, GetLegacyFileNameFromUrl(url));
-            if (File.Exists(legacyFilePath))
-            {
-                // Overwrite in case the destination file was created concurrently between our
-                // earlier existence check and this move operation
-                try
-                {
-                    File.Move(legacyFilePath, filePath, overwrite: true);
-                    return _previousPathsByUrl[url] = filePath;
-                }
-                catch (IOException)
-                {
-                    // The legacy file was moved or deleted concurrently or something else happened.
-                    // Upgrading old files is not crucial, so we can just move on.
-                }
-            }
-        }
-
-        Directory.CreateDirectory(workingDirPath);
-
+        var actualFilePath = filePath;
         await Http.ResiliencePipeline.ExecuteAsync(
             async innerCancellationToken =>
             {
-                // Download the file
                 using var response = await Http.Client.GetAsync(url, innerCancellationToken);
-                await using var output = File.Create(filePath);
+
+                // Prefer the file name from Content-Disposition if available
+                var cdFileName =
+                    response.Content.Headers.ContentDisposition?.FileNameStar
+                    ?? GetFileNameFromContentDisposition(
+                        response.Content.Headers.ContentDisposition?.ToString()
+                    );
+
+                string baseName;
+                string ext;
+                if (!string.IsNullOrWhiteSpace(cdFileName))
+                {
+                    baseName = Path.GetFileNameWithoutExtension(cdFileName).Truncate(60);
+                    ext = Path.GetExtension(cdFileName);
+                }
+                else
+                {
+                    var urlFileName = Regex.Match(url, @".+/([^?]*)").Groups[1].Value;
+                    baseName = Path.GetFileNameWithoutExtension(urlFileName).Truncate(60);
+                    ext = Path.GetExtension(urlFileName);
+                }
+
+                // First file keeps original name; duplicates get -v2, -v3, etc.
+                var candidate = Path.Combine(targetDir, Path.EscapeFileName(baseName + ext));
+                var version = 2;
+                while (File.Exists(candidate))
+                {
+                    candidate = Path.Combine(
+                        targetDir,
+                        Path.EscapeFileName(baseName + $"-v{version}" + ext)
+                    );
+                    version++;
+                }
+                actualFilePath = candidate;
+
+                await using var output = File.Create(actualFilePath);
                 await response.Content.CopyToAsync(output, innerCancellationToken);
             },
             cancellationToken
         );
 
-        return _previousPathsByUrl[url] = filePath;
+        return _previousPathsByUrl[url] = actualFilePath;
     }
 }
 
 internal partial class ExportAssetDownloader
 {
+    private static string? GetFileNameFromContentDisposition(string? contentDisposition)
+    {
+        if (string.IsNullOrEmpty(contentDisposition))
+            return null;
+
+        // Try filename* (RFC 5987) first: filename*=UTF-8''encoded-name
+        var starMatch = Regex.Match(
+            contentDisposition,
+            @"filename\*\s*=\s*UTF-8''([^;\s]+)",
+            RegexOptions.IgnoreCase
+        );
+        if (starMatch.Success)
+            return Uri.UnescapeDataString(starMatch.Groups[1].Value);
+
+        // Fall back to filename="name"
+        var match = Regex.Match(
+            contentDisposition,
+            @"filename\s*=\s*""?([^"";\s]+)""?",
+            RegexOptions.IgnoreCase
+        );
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
     private static string NormalizeUrl(string url)
     {
         // Remove signature parameters from Discord CDN URLs to normalize them

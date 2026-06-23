@@ -121,6 +121,7 @@ internal class JsonMessageWriter(Stream stream, ExportContext context)
 
     private async ValueTask WriteAttachmentAsync(
         Attachment attachment,
+        string authorSubDir,
         CancellationToken cancellationToken = default
     )
     {
@@ -129,7 +130,7 @@ internal class JsonMessageWriter(Stream stream, ExportContext context)
         _writer.WriteString("id", attachment.Id.ToString());
         _writer.WriteString(
             "url",
-            await Context.ResolveAssetUrlAsync(attachment.Url, cancellationToken)
+            await Context.ResolveAssetUrlAsync(attachment.Url, cancellationToken, authorSubDir)
         );
         _writer.WriteString("fileName", attachment.FileName);
         _writer.WriteNumber("fileSizeBytes", attachment.FileSize.TotalBytes);
@@ -471,9 +472,12 @@ internal class JsonMessageWriter(Stream stream, ExportContext context)
 
         // Attachments
         _writer.WriteStartArray("attachments");
+        var authorSubDir = Path.EscapeFileName(
+            $"{message.Author.Id}_{message.Author.FullName}".Truncate(80)
+        );
 
         foreach (var attachment in message.Attachments)
-            await WriteAttachmentAsync(attachment, cancellationToken);
+            await WriteAttachmentAsync(attachment, authorSubDir, cancellationToken);
 
         _writer.WriteEndArray();
 
@@ -570,7 +574,7 @@ internal class JsonMessageWriter(Stream stream, ExportContext context)
             _writer.WriteStartArray("attachments");
 
             foreach (var attachment in message.ForwardedMessage.Attachments)
-                await WriteAttachmentAsync(attachment, cancellationToken);
+                await WriteAttachmentAsync(attachment, authorSubDir, cancellationToken);
 
             _writer.WriteEndArray();
 

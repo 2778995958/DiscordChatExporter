@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DiscordChatExporter.Core.Discord.Data;
 using DiscordChatExporter.Core.Discord.Data.Embeds;
+using DiscordChatExporter.Core.Utils.Extensions;
 
 namespace DiscordChatExporter.Core.Exporting;
 
@@ -36,6 +37,7 @@ internal class PlainTextMessageWriter(Stream stream, ExportContext context)
 
     private async ValueTask WriteAttachmentsAsync(
         IReadOnlyList<Attachment> attachments,
+        string authorSubDir,
         CancellationToken cancellationToken = default
     )
     {
@@ -49,7 +51,7 @@ internal class PlainTextMessageWriter(Stream stream, ExportContext context)
             cancellationToken.ThrowIfCancellationRequested();
 
             await _writer.WriteLineAsync(
-                await Context.ResolveAssetUrlAsync(attachment.Url, cancellationToken)
+                await Context.ResolveAssetUrlAsync(attachment.Url, cancellationToken, authorSubDir)
             );
         }
 
@@ -241,7 +243,7 @@ internal class PlainTextMessageWriter(Stream stream, ExportContext context)
             $"Originally sent: {Context.FormatDate(forwardedMessage.Timestamp)}"
         );
 
-        await WriteAttachmentsAsync(forwardedMessage.Attachments, cancellationToken);
+        await WriteAttachmentsAsync(forwardedMessage.Attachments, null!, cancellationToken);
         await WriteEmbedsAsync(forwardedMessage.Embeds, cancellationToken);
         await WriteStickersAsync(forwardedMessage.Stickers, cancellationToken);
 
@@ -279,7 +281,10 @@ internal class PlainTextMessageWriter(Stream stream, ExportContext context)
         }
 
         // Attachments, embeds, reactions, etc.
-        await WriteAttachmentsAsync(message.Attachments, cancellationToken);
+        var authorSubDir = Path.EscapeFileName(
+            $"{message.Author.Id}_{message.Author.FullName}".Truncate(80)
+        );
+        await WriteAttachmentsAsync(message.Attachments, authorSubDir, cancellationToken);
         await WriteEmbedsAsync(message.Embeds, cancellationToken);
         await WriteStickersAsync(message.Stickers, cancellationToken);
         await WriteReactionsAsync(message.Reactions, cancellationToken);
